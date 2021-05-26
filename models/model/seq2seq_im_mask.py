@@ -99,6 +99,9 @@ class Module(Base):
 
             # append goal + instr
             lang_goal_instr = lang_goal + lang_instr
+            feat['lang_goal'].append(lang_goal)
+            feat['lang_instr'].append(lang_instr)
+            
             feat['lang_goal_instr'].append(lang_goal_instr)
 
             # load Resnet features from disk
@@ -163,7 +166,7 @@ class Module(Base):
                 seqs = [torch.tensor(vv, device=device, dtype=torch.float if ('frames' in k) else torch.long) for vv in v]
                 pad_seq = pad_sequence(seqs, batch_first=True, padding_value=self.pad)
                 feat[k] = pad_seq
-
+        
         return feat
 
 
@@ -200,13 +203,14 @@ class Module(Base):
         '''
         encode goal+instr language
         '''
+     
         emb_lang_goal_instr = feat['lang_goal_instr']
         self.lang_dropout(emb_lang_goal_instr.data)
         enc_lang_goal_instr, _ = self.enc(emb_lang_goal_instr)
         enc_lang_goal_instr, _ = pad_packed_sequence(enc_lang_goal_instr, batch_first=True)
         self.lang_dropout(enc_lang_goal_instr)
         cont_lang_goal_instr = self.enc_att(enc_lang_goal_instr)
-
+      
         return cont_lang_goal_instr, enc_lang_goal_instr
 
 

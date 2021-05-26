@@ -1,0 +1,7 @@
+/data
+/exp
+.ipynb_checkpoints/
+.vscode/
+*.pyc
+*.pyo
+

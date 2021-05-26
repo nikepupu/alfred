@@ -1,0 +1,1 @@
+python models/train/train_seq2seq.py --data data/json_feat_2.1.0 --model train_world_model --dout exp/model:{model},name:pm_and_subgoals_01 --splits data/splits/oct21.json --batch 4 --pm_aux_loss_wt 0.1 --subgoal_aux_loss_wt 0.1 --gpu
