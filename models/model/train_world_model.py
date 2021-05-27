@@ -89,7 +89,7 @@ class Module(Base):
 
         # args
         args = args or self.args
-
+        args.epoch = 50
         # splits
         train = splits['train']
         valid_seen = splits['valid_seen']
@@ -139,7 +139,8 @@ class Module(Base):
                 # p_train.update(preds)
                 # loss = self.compute_loss(out, batch, feat)
                 loss = {}
-                loss['world_model_loss'] = feat['loss']
+                loss['world_model_loss'] = feat['state_loss']
+                loss['reward_loss'] = feat['reward_loss']
                 
                 for k, v in loss.items():
                     ln = 'loss_' + k
@@ -318,16 +319,28 @@ class Module(Base):
         # print("enc_lang", enc_lang.shape)
         # print("action", feat['action_low'].shape)
         # exit()
-        loss = 0
+        state_loss = 0
+        state_0 = cont_lang, torch.zeros_like(cont_lang)
+        state_t = state_0
+        reward_loss = 0
         for i in range(len_dataset-1):
             # print("step ", i)
             # print("frame inside, ", frames[:,i,:].shape)
             # print("action inside ", feat['action_low'][:, i].shape)
             # print("next frame inside ",frames[:,i+1,:].shape )
+            # self.world_model.predict_reward(frames[:,i,:],)
+            before_progress = feat['subgoal_progress'][:,i]
+            after_progress = feat['subgoal_progress'][:,i+1]
             
-            loss += self.world_model.contrastive_loss(frames[:,i,:], feat['action_low'][:,i], frames[:,i+1,:])
+            reward, state_t = self.world_model.predict_reward(frames[:,i,:], feat['action_low'][:,i], enc_lang, state_t)
+            state_loss += self.world_model.contrastive_loss(frames[:,i,:], feat['action_low'][:,i], frames[:,i+1,:])
+            # print(after_progress-before_progress)
+            # print(reward.flatten())
+            reward_loss += nn.MSELoss()(reward.flatten(), after_progress-before_progress)
         
-        feat['loss'] = loss
+        feat['reward_loss'] = reward_loss
+        feat['state_loss'] = state_loss
+        
         
         return feat
     

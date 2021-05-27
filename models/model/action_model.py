@@ -16,7 +16,7 @@ import numpy as np
 import torch
 from torch.utils import data
 from torch import mode, nn
-
+from torch.nn import functional as F
 import matplotlib.pyplot as plt
 from torchvision.io import read_image
 from torchvision.transforms import Resize
@@ -24,6 +24,19 @@ from transformers import RobertaTokenizer
 import pickle
 
 ROBERTA_DIM = 1024
+class DotAttn(nn.Module):
+    '''
+    dot-attention (or soft-attention)
+    '''
+
+    def forward(self, inp, h):
+        score = self.softmax(inp, h)
+        return score.expand_as(inp).mul(inp).sum(1), score
+
+    def softmax(self, inp, h):
+        raw_score = inp.bmm(h.unsqueeze(2))
+        score = F.softmax(raw_score, dim=1)
+        return score
 
 class ThorTransitionsDataset(data.Dataset):
     """Create dataset of (o_t, a_t, o_{t+1}) transitions from replay buffer."""
@@ -249,11 +262,22 @@ class ContrastiveSWM(nn.Module):
         self.copy_action = copy_action
         
         
-        self.lstm_low = nn.LSTM(768,ROBERTA_DIM//2, 2 ,batch_first=True, bidirectional=True)
-        self.lstm_task = nn.LSTM(768,ROBERTA_DIM//2, 2 ,batch_first=True, bidirectional=True)
+        self.lstm_low = nn.LSTM(1024,ROBERTA_DIM//2, 2 ,batch_first=True, bidirectional=True)
+        self.lstm_task = nn.LSTM(1024,ROBERTA_DIM//2, 2 ,batch_first=True, bidirectional=True)
+        self.attn = DotAttn()
+        self.attn_dropout = nn.Dropout(0.1)
+        self.h_tm1_fc = nn.Linear(1024, 1024)
+        self.cell = nn.LSTMCell(self.embedding_dim *  self.num_objects + self.action_dim + 1024, 1024)
         
-        self.reward_predictor = nn.Linear(hidden_dim, 1)
-       
+        # self.lstm_cell = nn.LSTMCell(input_dims, hidden_dim)
+        #  current state_dim + action_dim +  language embedding 
+        self.reward_predictor = nn.Sequential(
+          nn.Linear(self.embedding_dim *  self.num_objects + self.action_dim + 1024 , self.hidden_dim),
+          nn.ReLU(),
+          nn.Linear(self.hidden_dim, self.hidden_dim),
+          nn.ReLU(),
+          nn.Linear(self.hidden_dim, 1),
+        )
         
         self.pos_loss = 0
         self.neg_loss = 0
@@ -289,7 +313,6 @@ class ContrastiveSWM(nn.Module):
             hidden_dim=hidden_dim,
             output_dim=embedding_dim,
             num_objects=num_objects,
-            
             )
 
         self.transition_model = TransitionGNN(
@@ -319,12 +342,42 @@ class ContrastiveSWM(nn.Module):
     def transition_loss(self, state, action, next_state):
         return self.energy(state, action, next_state).mean()
     
-
+    def predict_reward(self, obs, action, language,  state_tm1):
+        objs = self.obj_extractor(obs)
+    
+        state = self.obj_encoder(objs)
+        state = state.view(state.shape[0], -1)
+        action_vec = to_one_hot(
+                    action, self.action_dim )
+        
+        lang_feat_t = language
+        
+        h_tm1 = state_tm1[0]
+        
+        weighted_lang_t, lang_attn_t = self.attn(self.attn_dropout(lang_feat_t), self.h_tm1_fc(h_tm1))
+        # print(self.num_objects)
+        # print(weighted_lang_t.shape)
+        # print(state.shape)
+        # print(action_vec.shape)
+        
+        
+        inp_t = torch.cat([state, weighted_lang_t, action_vec], dim=1)
+        state_t = self.cell(inp_t, state_tm1)
+        # print(inp_t.shape)
+        # print(self.reward_predictor)
+        reward = self.reward_predictor(inp_t)
+        
+        return reward, state_t
+        
+        
+        
+        
+        
+        
     def contrastive_loss(self, obs, action, next_obs):
        
         objs = self.obj_extractor(obs)
         next_objs = self.obj_extractor(next_obs)
-        
         state = self.obj_encoder(objs)
         next_state = self.obj_encoder(next_objs)
         # Sample negative state across episodes at random
@@ -342,6 +395,7 @@ class ContrastiveSWM(nn.Module):
                 state, action, neg_state, no_trans=True)).mean()
 
         loss = self.pos_loss + self.neg_loss
+        
 
         return loss
 
