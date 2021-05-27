@@ -2,6 +2,7 @@
 import os
 import torch
 import numpy as np
+from torch.optim import optimizer
 import nn.vnn as vnn
 import collections
 from torch import nn
@@ -10,7 +11,8 @@ from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_se
 from models.utils.metric import compute_f1, compute_exact
 from gen.utils.image_util import decompress_mask
 from model.seq2seq_im_mask import Module as Base
-from model.action_model import ContrastiveSWM
+from model.action_model import ContrastiveSWM, ModelFreePolicy
+from model.action_model import a3c_loss
 import os
 import random
 import json
@@ -21,6 +23,50 @@ import numpy as np
 from torch import nn
 from tensorboardX import SummaryWriter
 from tqdm import trange
+import warnings
+from torch import optim
+from typing import Tuple, Dict, Union, Optional, List, Any, Sequence
+
+def compute_losses_and_backprop(
+    loss_dict,
+    model: nn.Module,
+    optimizer: optim.Optimizer,
+    retain_graph: bool = False,
+    skip_backprop: bool = False,
+    keep_gradient_and_skip_backprop: bool = False
+) -> Dict[str, float]:
+    model.zero_grad()
+    full_loss = None
+    last_losses = {}
+    if keep_gradient_and_skip_backprop:
+        skip_backprop = True
+    for k, loss in loss_dict.items():
+        loss = loss.squeeze()
+        if keep_gradient_and_skip_backprop:
+            last_losses["loss/" + k] = loss
+        else:
+            last_losses["loss/" + k] = loss.item()
+        if full_loss is None:
+            full_loss = loss
+        elif (full_loss.is_cuda == loss.is_cuda) and (
+            not full_loss.is_cuda or full_loss.get_device() == loss.get_device()
+        ):
+            full_loss += loss
+        else:
+            warnings.warn("Loss {} is on a different device!".format(k))
+    
+    if full_loss is not None:
+        if not skip_backprop:
+            full_loss.backward(retain_graph=retain_graph)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 3, "inf")
+
+           
+            optimizer.step()
+     
+
+
+    return last_losses
+
 class Module(Base):
     def __init__(self, args, vocab):
         '''
@@ -49,6 +95,8 @@ class Module(Base):
             copy_action=False,
             encoder='large'
         )
+        self.a3c_model = ModelFreePolicy(800)
+        
         self.dec = decoder(self.emb_action_low, args.dframe, 2*args.dhid,
                            pframe=args.pframe,
                            attn_dropout=args.attn_dropout,
@@ -82,6 +130,105 @@ class Module(Base):
         # reset model
         self.reset()
         
+        # a3c model parameters
+        self.a3c_gamma = 0.99
+        self.a3c_tau = 1.0
+        self.a3c_beta = 1e-2
+        self.huber_delta = None
+        self.gpu_id = 0
+        
+    # def act(self):
+        
+        
+    def run_dyna(self, feat, optim):
+       
+        cont_lang, enc_lang = self.encode_lang(feat)
+        frames = self.vis_dropout(feat['frames'])
+        # print(feat.keys())
+        # print(feat['action_low'])
+        # print(feat['action_low'].shape)
+        # print("frames ", frames.shape)
+        batch_size = frames.shape[0]
+        len_dataset = frames.shape[1]
+        # print("cont_lang", cont_lang.shape)
+        # print("enc_lang", enc_lang.shape)
+        # print("action", feat['action_low'].shape)
+        # exit()
+        state_loss = 0
+        
+        reward_loss = 0
+        for i in range(len_dataset-1):
+            for batch in range(batch_size):
+                
+                
+                state_0 = cont_lang[batch].unsqueeze(0), torch.zeros_like(cont_lang[batch].unsqueeze(0))
+                state_t = state_0
+                obs = frames[batch, i, :].unsqueeze(0)
+                with torch.no_grad():
+                    image_state = self.world_model.obj_extractor(obs)
+                    latent_state = self.world_model.obj_encoder(image_state)
+                    
+                hidden1 = torch.zeros(1, 1, 512).cuda()
+                hidden2 = torch.zeros(1, 1, 512).cuda()
+                self.hidden = tuple((hidden1, hidden2))
+                self.entropy_per_agent = []
+                self.values_per_agent = []
+                self.rewards_per_agent = []
+                self.log_prob_of_actions = []
+                
+                for t in range(50):
+                    eval_result = self.a3c_model(latent_state, self.hidden, None)
+                    self.hidden = eval_result.get("hidden")
+                    
+
+                    # Either marginal or central agent
+                    logit_per_agent = eval_result["actor"][0].unsqueeze(0)
+                        
+                    probs_per_agent =  F.softmax(logit_per_agent, dim=1) 
+
+                    log_probs_per_agent = F.log_softmax(logit_per_agent, dim=1) 
+                    
+                    eval_result["log_probs_per_agent"] = log_probs_per_agent
+
+                    self.hidden = eval_result.get("hidden")
+                
+                    self.entropy_per_agent.append(
+                                        -(log_probs_per_agent * probs_per_agent).sum().unsqueeze(0)
+                                )
+                    
+                    action = probs_per_agent.multinomial(num_samples=1).item()
+
+                    log_prob_of_action_per_agent = log_probs_per_agent.view(-1)[action]
+                    self.values_per_agent.append(eval_result.get("critic"))
+                    
+                    with torch.no_grad():
+                        
+                        reward, state_t = self.world_model.predict_reward(None, torch.LongTensor([action]).cuda(), enc_lang[batch].unsqueeze(0),  state_t, latent_state)
+                        latent_state = latent_state + self.world_model.transition_model(latent_state, torch.LongTensor([action]).cuda())
+                        
+                    self.rewards_per_agent.append(reward)
+                    self.log_prob_of_actions.append(log_prob_of_action_per_agent)
+                    
+                eval_result = self.a3c_model(latent_state, self.hidden, None)
+                future_reward_est = eval_result["critic"].item()
+                
+                a3c_losses = a3c_loss(
+                    values= self.values_per_agent,
+                    rewards= self.rewards_per_agent,
+                    log_prob_of_actions= self.log_prob_of_actions,
+                    entropies= self.entropy_per_agent,
+                    future_reward_est=future_reward_est,
+                    gamma=self.a3c_gamma,
+                    tau=self.a3c_tau,
+                    beta=self.a3c_beta,
+                    gpu_id=self.gpu_id,
+                    huber_delta=self.huber_delta,
+                )
+                compute_losses_and_backprop(
+                    loss_dict =  a3c_losses,
+                    model = self.a3c_model,
+                    optimizer= optim)
+        
     def run_train(self, splits, args=None, optimizer=None):
         '''
         training loop
@@ -89,7 +236,6 @@ class Module(Base):
 
         # args
         args = args or self.args
-        args.epoch = 50
         # splits
         train = splits['train']
         valid_seen = splits['valid_seen']
@@ -157,6 +303,8 @@ class Module(Base):
                 sum_loss = sum_loss.detach().cpu()
                 total_train_loss.append(float(sum_loss))
                 train_iter += self.args.batch
+                self.run_dyna(feat, optimizer)
+            continue
 
             ## compute metrics for train (too memory heavy!)
             # m_train = {k: sum(v) / len(v) for k, v in m_train.items()}
@@ -331,9 +479,9 @@ class Module(Base):
             # self.world_model.predict_reward(frames[:,i,:],)
             before_progress = feat['subgoal_progress'][:,i]
             after_progress = feat['subgoal_progress'][:,i+1]
-            
             reward, state_t = self.world_model.predict_reward(frames[:,i,:], feat['action_low'][:,i], enc_lang, state_t)
             state_loss += self.world_model.contrastive_loss(frames[:,i,:], feat['action_low'][:,i], frames[:,i+1,:])
+            
             # print(after_progress-before_progress)
             # print(reward.flatten())
             reward_loss += nn.MSELoss()(reward.flatten(), after_progress-before_progress)

@@ -22,6 +22,8 @@ from torchvision.io import read_image
 from torchvision.transforms import Resize
 from transformers import RobertaTokenizer
 import pickle
+import copy
+from typing import Dict, List, Union, Optional, Any, TypeVar, Generic
 
 ROBERTA_DIM = 1024
 class DotAttn(nn.Module):
@@ -342,11 +344,22 @@ class ContrastiveSWM(nn.Module):
     def transition_loss(self, state, action, next_state):
         return self.energy(state, action, next_state).mean()
     
-    def predict_reward(self, obs, action, language,  state_tm1):
+    def predict_next_state(self, obs, action):
         objs = self.obj_extractor(obs)
-    
         state = self.obj_encoder(objs)
-        state = state.view(state.shape[0], -1)
+        return state + self.transition_model(state, action)
+        
+    def predict_reward(self, obs, action, language,  state_tm1, input_state=None):
+       
+        
+        if input_state is None:
+            objs = self.obj_extractor(obs)
+            state = self.obj_encoder(objs)
+            state = state.view(state.shape[0], -1)
+        else:
+            state = input_state.view(input_state.shape[0], -1)
+            
+            
         action_vec = to_one_hot(
                     action, self.action_dim )
         
@@ -360,7 +373,11 @@ class ContrastiveSWM(nn.Module):
         # print(state.shape)
         # print(action_vec.shape)
         
-        
+        # if input_state is not None:
+        #     print(input_state.shape)
+        #     print(weighted_lang_t.shape)
+        #     print(action_vec.shape)
+            
         inp_t = torch.cat([state, weighted_lang_t, action_vec], dim=1)
         state_t = self.cell(inp_t, state_tm1)
         # print(inp_t.shape)
@@ -817,45 +834,13 @@ class LookAheadPolicy(nn.Module):
 class ModelFreePolicy(nn.Module):
     def __init__(self, num_outputs) -> None:
         super(ModelFreePolicy, self).__init__()
-        self.num_inputs_per_agent = 3
+        self.num_inputs_per_agent = 5
         final_cnn_channels = 128
         state_repr_length = 512
         self.num_outputs = num_outputs
         self.num_agents = 1
-        self.cnn = nn.Sequential(
-            OrderedDict(
-                [
-                    (
-                        "conv1",
-                        nn.Conv2d(
-                            self.num_inputs_per_agent, 16, 5, stride=1, padding=2
-                        ),
-                    ),
-                    ("maxpool1", nn.MaxPool2d(2, 2)),
-                    ("relu1", nn.ReLU(inplace=True)),
-                    # shape =
-                    ("conv2", nn.Conv2d(16, 16, 5, stride=1, padding=1)),
-                    ("maxpool2", nn.MaxPool2d(2, 2)),
-                    ("relu2", nn.ReLU(inplace=True)),
-                    # shape =
-                    ("conv3", nn.Conv2d(16, 32, 4, stride=1, padding=1)),
-                    ("maxpool3", nn.MaxPool2d(3, 3)),
-                    ("relu3", nn.ReLU(inplace=True)),
-                    # shape =
-                    ("conv4", nn.Conv2d(32, 64, 3, stride=1, padding=1)),
-                    ("maxpool4", nn.MaxPool2d(3, 3)),
-                    ("relu4", nn.ReLU(inplace=True)),
-                    # shape = (4, 4)
-                    (
-                        "conv5",
-                        nn.Conv2d(64, final_cnn_channels, 3, stride=1, padding=1),
-                    ),
-                    ("maxpool5", nn.MaxPool2d(3, 3)),
-                    ("relu5", nn.ReLU(inplace=True)),
-                    # shape = (2, 2)
-                ]
-            )
-        )
+        self.linear1 = nn.Linear(5*2, 512)
+        self.linear2 = nn.Linear(512, 512)
         # LSTM
         self.lstm = nn.LSTM(
             final_cnn_channels * 4,
@@ -884,12 +869,6 @@ class ModelFreePolicy(nn.Module):
 
         # Setting initial weights
         self.apply(weights_init)
-        relu_gain = nn.init.calculate_gain("relu")
-        self.cnn._modules["conv1"].weight.data.mul_(relu_gain)
-        self.cnn._modules["conv2"].weight.data.mul_(relu_gain)
-        self.cnn._modules["conv3"].weight.data.mul_(relu_gain)
-        self.cnn._modules["conv4"].weight.data.mul_(relu_gain)
-        self.cnn._modules["conv5"].weight.data.mul_(relu_gain)
 
         
         self.train()
@@ -900,12 +879,9 @@ class ModelFreePolicy(nn.Module):
         hidden: Optional[torch.FloatTensor],
         agent_rotations: Sequence[int],
     ):
-
-        if inputs.shape != (self.num_agents, self.num_inputs_per_agent, 300, 300):
-            raise Exception("input to model is not as expected, check!")
         
-        x = self.cnn(inputs)
-        # x.shape == (2, 128, 2, 2)
+        x = self.linear1(inputs.view(inputs.shape[0], -1))
+        x = self.linear2(x)
         
         #x = x.view(x.size(0), -1)
         x = torch.reshape(x, (x.size(0), -1))
@@ -947,6 +923,61 @@ class ModelFreePolicy(nn.Module):
         
         return to_return
     
+def huber_loss(diff, delta):
+    sq = diff.pow(2)
+    abs = diff.abs()
+    where_abs = (abs - delta >= 0).float()
+
+    return (sq * (1.0 - where_abs) + (2 * delta * abs - delta ** 2) * where_abs).sum()
+ 
+def a3c_loss(
+        values: List[torch.FloatTensor],
+        rewards: List[float],
+        log_prob_of_actions: List[torch.FloatTensor],
+        entropies: List[torch.FloatTensor],
+        future_reward_est: float,
+        gamma: float,
+        tau: float,
+        beta: float,
+        gpu_id: int,
+        huber_delta: Optional[float] = None,
+    ):
+        R = torch.FloatTensor([[future_reward_est]])
+        if gpu_id >= 0:
+            with torch.cuda.device(gpu_id):
+                R = R.cuda()
+        values = copy.copy(values)
+        values.append(R)
+        policy_loss = 0
+        value_loss = 0
+        entropy_loss = 0
+        gae = torch.zeros(1, 1)
+        if gpu_id >= 0:
+            with torch.cuda.device(gpu_id):
+                gae = gae.cuda()
+        for i in reversed(range(len(rewards))):
+            R = gamma * R + rewards[i]
+            advantage = R - values[i]
+            value_loss = value_loss + (
+                0.5 * advantage.pow(2)
+                if huber_delta is None
+                else 0.5 * huber_loss(advantage, huber_delta)
+            )
+
+            # Generalized Advantage Estimation
+            delta_t = rewards[i] + gamma * values[i + 1].detach() - values[i].detach()
+
+            gae = gae * gamma * tau + delta_t
+
+            policy_loss = policy_loss - log_prob_of_actions[i] * gae
+            
+            entropy_loss -= beta * entropies[i]
+
+        return {
+            "policy": policy_loss,
+            "value": 0.5 * value_loss,
+            "entropy": entropy_loss,
+        }
     
 if __name__ == "__main__":
     model = ModelFreePolicy(13)
