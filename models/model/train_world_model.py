@@ -284,7 +284,7 @@ class Module(Base):
             
             for batch, feat in self.iterate(train, args.batch):
                 out = self.forward(feat)
-                
+                rewards = self.run_dyna(feat, optimizer)
                 # preds = self.extract_preds(out, batch, feat)
                 # p_train.update(preds)
                 # loss = self.compute_loss(out, batch, feat)
@@ -307,7 +307,7 @@ class Module(Base):
                 sum_loss = sum_loss.detach().cpu()
                 total_train_loss.append(float(sum_loss))
                 train_iter += self.args.batch
-                rewards = self.run_dyna(feat, optimizer)
+                
                
             continue
 
