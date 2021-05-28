@@ -284,18 +284,18 @@ class Module(Base):
             
             for batch, feat in self.iterate(train, args.batch):
                 out = self.forward(feat)
-                rewards = self.run_dyna(feat, optimizer)
+                
                 # preds = self.extract_preds(out, batch, feat)
                 # p_train.update(preds)
                 # loss = self.compute_loss(out, batch, feat)
                 loss = {}
                 loss['world_model_loss'] = feat['state_loss']
                 loss['reward_loss'] = feat['reward_loss']
-                loss['fake_reward'] = sum([sum(r) for r in rewards])
+                
                 for k, v in loss.items():
                     ln = 'loss_' + k
                     m_train[ln].append(v.item())
-                    self.summary_writer.add_scalar('train/' + ln, v.item(), train_iter)
+                    
 
                 # optimizer backward pass
                 optimizer.zero_grad()
@@ -307,8 +307,12 @@ class Module(Base):
                 sum_loss = sum_loss.detach().cpu()
                 total_train_loss.append(float(sum_loss))
                 train_iter += self.args.batch
+                rewards = self.run_dyna(feat, optimizer)
                 
-               
+                loss['fake_reward'] = sum([sum(r) for r in rewards])
+                for k, v in loss.items():
+                    ln = 'loss_' + k
+                    self.summary_writer.add_scalar('train/' + ln, v.item(), train_iter)
             continue
 
             ## compute metrics for train (too memory heavy!)
