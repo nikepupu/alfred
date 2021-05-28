@@ -157,6 +157,7 @@ class Module(Base):
         state_loss = 0
         
         reward_loss = 0
+        rewards = []
         for i in range(len_dataset-1):
             for batch in range(batch_size):
                 
@@ -176,7 +177,7 @@ class Module(Base):
                 self.rewards_per_agent = []
                 self.log_prob_of_actions = []
                 
-                for t in range(50):
+                for t in range(1):
                     eval_result = self.a3c_model(latent_state, self.hidden, None)
                     self.hidden = eval_result.get("hidden")
                     
@@ -224,10 +225,13 @@ class Module(Base):
                     gpu_id=self.gpu_id,
                     huber_delta=self.huber_delta,
                 )
+                rewards.append(self.rewards_per_agent)
                 compute_losses_and_backprop(
                     loss_dict =  a3c_losses,
                     model = self.a3c_model,
                     optimizer= optim)
+                
+        return rewards
         
     def run_train(self, splits, args=None, optimizer=None):
         '''
@@ -287,7 +291,7 @@ class Module(Base):
                 loss = {}
                 loss['world_model_loss'] = feat['state_loss']
                 loss['reward_loss'] = feat['reward_loss']
-                
+                loss['fake_reward'] = sum([sum(r) for r in rewards])
                 for k, v in loss.items():
                     ln = 'loss_' + k
                     m_train[ln].append(v.item())
@@ -303,7 +307,8 @@ class Module(Base):
                 sum_loss = sum_loss.detach().cpu()
                 total_train_loss.append(float(sum_loss))
                 train_iter += self.args.batch
-                self.run_dyna(feat, optimizer)
+                rewards = self.run_dyna(feat, optimizer)
+               
             continue
 
             ## compute metrics for train (too memory heavy!)
