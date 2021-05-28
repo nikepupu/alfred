@@ -158,6 +158,7 @@ class Module(Base):
         
         reward_loss = 0
         rewards = []
+        real_rewards = []
         for i in range(len_dataset-1):
             for batch in range(batch_size):
                 
@@ -176,6 +177,8 @@ class Module(Base):
                 self.values_per_agent = []
                 self.rewards_per_agent = []
                 self.log_prob_of_actions = []
+                before_progress = feat['subgoal_progress'][batch,i]
+                after_progress = feat['subgoal_progress'][batch,i+1]
                 
                 for t in range(1):
                     eval_result = self.a3c_model(latent_state, self.hidden, None)
@@ -203,7 +206,8 @@ class Module(Base):
                     self.values_per_agent.append(eval_result.get("critic"))
                     
                     with torch.no_grad():
-                        
+                        real_reward = (after_progress - before_progress) * (action == feat['action_low'][batch,i].item())
+                        real_rewards.append(real_reward)
                         reward, state_t = self.world_model.predict_reward(None, torch.LongTensor([action]).cuda(), enc_lang[batch].unsqueeze(0),  state_t, latent_state)
                         latent_state = latent_state + self.world_model.transition_model(latent_state, torch.LongTensor([action]).cuda())
                         
@@ -231,7 +235,7 @@ class Module(Base):
                     model = self.a3c_model,
                     optimizer= optim)
                 
-        return rewards
+        return rewards, real_rewards
         
     def run_train(self, splits, args=None, optimizer=None):
         '''
@@ -307,9 +311,11 @@ class Module(Base):
                 sum_loss = sum_loss.detach().cpu()
                 total_train_loss.append(float(sum_loss))
                 train_iter += self.args.batch
-                rewards = self.run_dyna(feat, optimizer)
+                rewards, real_rewards = self.run_dyna(feat, optimizer)
                 
                 loss['fake_reward'] = sum([sum(r) for r in rewards])
+                loss['real_rewards'] = sum(real_rewards)
+                
                 for k, v in loss.items():
                     ln = 'loss_' + k
                     self.summary_writer.add_scalar('train/' + ln, v.item(), train_iter)
