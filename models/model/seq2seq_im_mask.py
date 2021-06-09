@@ -101,7 +101,6 @@ class Module(Base):
             lang_goal_instr = lang_goal + lang_instr
             feat['lang_goal'].append(lang_goal)
             feat['lang_instr'].append(lang_instr)
-            
             feat['lang_goal_instr'].append(lang_goal_instr)
 
             # load Resnet features from disk

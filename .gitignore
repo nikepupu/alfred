@@ -4,4 +4,5 @@
 .vscode/
 *.pyc
 *.pyo
-
+*.zip
+/model_pth

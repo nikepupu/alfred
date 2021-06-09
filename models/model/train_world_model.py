@@ -3,16 +3,16 @@ import os
 import torch
 import numpy as np
 from torch.optim import optimizer
-import nn.vnn as vnn
+import models.nn.vnn as vnn
 import collections
 from torch import nn
 from torch.nn import functional as F
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_sequence
 from models.utils.metric import compute_f1, compute_exact
 from gen.utils.image_util import decompress_mask
-from model.seq2seq_im_mask import Module as Base
-from model.action_model import ContrastiveSWM, ModelFreePolicy
-from model.action_model import a3c_loss
+from models.model.seq2seq_im_mask import Module as Base
+from models.model.action_model import ContrastiveSWM, ModelFreePolicy
+from models.model.action_model import a3c_loss
 import os
 import random
 import json
@@ -26,7 +26,8 @@ from tqdm import trange
 import warnings
 from torch import optim
 from typing import Tuple, Dict, Union, Optional, List, Any, Sequence
-
+from PIL import Image
+from env.thor_env import ThorEnv
 def compute_losses_and_backprop(
     loss_dict,
     model: nn.Module,
@@ -137,6 +138,10 @@ class Module(Base):
         self.huber_delta = None
         self.gpu_id = 0
         
+        
+        #set up enivronment for interaction:
+        self.env = ThorEnv()
+        
     # def act(self):
         
         
@@ -236,7 +241,79 @@ class Module(Base):
                     optimizer= optim)
                 
         return rewards, real_rewards
-        
+    
+    # def run_simulator(self, cls, env, model, r_idx, resnet, traj_data, args, lock, splits, seen_actseqs, unseen_actseqs):
+    #     model.reset()
+
+    #     # setup scene
+    #     cls.setup_scene(env, traj_data, r_idx, args)
+
+    #     # extract language features
+    #     feat = model.featurize([traj_data], load_mask=False)
+
+    #     # goal instr
+    #     goal_instr = traj_data['turk_annotations']['anns'][r_idx]['task_desc']
+
+    #     done, success = False, False
+    #     actions = list()
+    #     fails = 0
+    #     t = 0
+    #     reward = 0
+    #     while not done:
+    #         # break if max_steps reached
+    #         if t >= args.max_steps:
+    #             break
+
+    #         # extract visual features
+    #         curr_image = Image.fromarray(np.uint8(env.last_event.frame))
+    #         feat['frames'] = resnet.featurize([curr_image], batch=1).unsqueeze(0)
+
+    #         # forward model
+    #         m_out = model.step(feat)
+    #         m_pred = model.extract_preds(m_out, [traj_data], feat, clean_special_tokens=False)
+    #         m_pred = list(m_pred.values())[0]
+
+    #         # check if <<stop>> was predicted
+    #         if m_pred['action_low'] == cls.STOP_TOKEN:
+    #             print("\tpredicted STOP")
+    #             break
+
+    #         # get action and mask
+    #         action, mask = m_pred['action_low'], m_pred['action_low_mask'][0]
+    #         mask = np.squeeze(mask, axis=0) if model.has_interaction(action) else None
+
+    #         # use predicted action and mask (if available) to interact with the env
+    #         t_success, _, _, err, api_action = env.va_interact(action, interact_mask=mask, smooth_nav=False)
+
+    #         if not t_success:
+    #             fails += 1
+    #             if fails >= args.max_fails:
+    #                 print("Interact API failed %d times" % fails + "; latest error '%s'" % err)
+    #                 break
+
+    #         # save action
+    #         if api_action is not None:
+    #             actions.append(api_action)
+            
+    #         # next time-step
+    #         t_reward, t_done = env.get_transition_reward()
+    #         t += 1
+    #         reward += t_reward
+
+    #     # actseq
+    #     seen_ids = [t['task'] for t in splits['tests_seen']]
+    #     actseq = {traj_data['task_id']: actions}
+
+    #     # log action sequences
+    #     lock.acquire()
+
+    #     if traj_data['task_id'] in seen_ids:
+    #         seen_actseqs.append(actseq)
+    #     else:
+    #         unseen_actseqs.append(actseq)
+
+    #     lock.release()
+    
     def run_train(self, splits, args=None, optimizer=None):
         '''
         training loop

@@ -87,6 +87,8 @@ class Leaderboard(EvalTask):
             # get action and mask
             action, mask = m_pred['action_low'], m_pred['action_low_mask'][0]
             mask = np.squeeze(mask, axis=0) if model.has_interaction(action) else None
+            
+            
 
             # use predicted action and mask (if available) to interact with the env
             t_success, _, _, err, api_action = env.va_interact(action, interact_mask=mask, smooth_nav=False)

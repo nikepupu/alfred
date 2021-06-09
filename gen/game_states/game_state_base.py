@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 
 import constants
-from graph import graph_obj
+from gen.graph import graph_obj
 from utils import game_util
 from utils.py_util import SetWithGet
 from utils.image_util import compress_mask
