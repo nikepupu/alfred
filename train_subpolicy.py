@@ -16,6 +16,9 @@ import itertools
 from setproctitle import setproctitle as ptitle
 from shared_optim import SharedRMSprop, SharedAdam
 import torch.multiprocessing as mp
+from tensorboardX import SummaryWriter
+summary_writer = SummaryWriter(log_dir='./exp')
+
 
 def ensure_shared_grads(model, shared_model, gpu=False):
     sentinal = object()
@@ -31,7 +34,7 @@ def ensure_shared_grads(model, shared_model, gpu=False):
             else:
                 shared_param._grad = param.grad.cpu()
                 
-def train_RL(env, model, shared_model, optimizer, lang_goal, actions, gpu_id=-1, mode='train'):
+def train_RL(env, model, shared_model, optimizer, lang_goal, actions, iter, gpu_id=-1, mode='train'):
     log_prob_of_actions = []
     entropy_per_agent = []
     values_per_agent = []
@@ -87,7 +90,7 @@ def train_RL(env, model, shared_model, optimizer, lang_goal, actions, gpu_id=-1,
                 action_name['receptableObjectId'] = obj['objectId']
 
         env.step(action_name)        
-    
+       
         last_reward, done = env.get_transition_reward()
         rewards_per_agent.append(last_reward)
         log_prob_of_actions.append(log_prob_of_action_per_agent)
@@ -100,7 +103,8 @@ def train_RL(env, model, shared_model, optimizer, lang_goal, actions, gpu_id=-1,
     # print(len(rewards_per_agent))
     # print(len(log_prob_of_actions))
     # print(len(entropy_per_agent))
-    print('mode: ' + mode + str(sum(rewards_per_agent)))
+    # print('mode: ' + mode + str(sum(rewards_per_agent)))
+    
     if mode == 'train':
         policy_loss = 0.0
         value_loss = 0.0
@@ -149,6 +153,7 @@ def train_RL(env, model, shared_model, optimizer, lang_goal, actions, gpu_id=-1,
         torch.nn.utils.clip_grad_norm_(model.parameters(), 3, "inf")
         ensure_shared_grads(model, shared_model, gpu= gpu_id >= 0)
         optimizer.step()
+    return sum(rewards_per_agent)
     
     if gpu_id >= 0:
         with torch.cuda.device(gpu_id):
@@ -181,14 +186,15 @@ def setup_scene(env, traj_data, r_idx, args, reward_type='dense'):
     env.step(dict(traj_data['scene']['init_action']))
 
     # print goal instr
-    print("Task: %s" % (traj_data['turk_annotations']['anns'][r_idx]['task_desc']))
+    # print("Task: %s" % (traj_data['turk_annotations']['anns'][r_idx]['task_desc']))
 
     # setup task for reward
     env.set_task(traj_data, args, reward_type=reward_type)
 
 
-def train(worker_num,  shared_model, optimizer, split='train', gpu_id=-1):
+def train(worker_num,  shared_model, optimizer, lock, iter=None, split='train', gpu_id=-1):
     ptitle(split + " Agent: {}".format(worker_num))
+   
     torch.manual_seed(worker_num)
     tasks = os.listdir('data/full_2.1.0/' + split)
     parser = argparse.ArgumentParser()
@@ -323,16 +329,22 @@ def train(worker_num,  shared_model, optimizer, split='train', gpu_id=-1):
                                 _, _ = env.get_transition_reward()
                             else:
                                 ## this will be our model
-                
-                                train_RL(env, model, shared_model, optimizer, lang_goal, actions, gpu_id=gpu_id, mode=split)
-                                
+                                if lock and iter:
+                                    with lock:
+                                        iter.value += 1
+                                reward = train_RL(env, model, shared_model, optimizer, lang_goal, actions, iter, gpu_id=gpu_id, mode=split)
+                                if summary_writer:
+                                    summary_writer.add_scalar('reward/' + split, reward, iter.value)
                                 break
+                                
                             t += 1
                     
 if __name__ == '__main__':
     import ctypes
     import time
+    
     vocab = torch.load('pp.vocab')
+  
     
     shared_model = A3CLSTMNSingleAgent(num_inputs_per_agent=3, num_outputs=15, state_repr_length=512, vocab=vocab)
     shared_model.share_memory()
@@ -347,18 +359,23 @@ if __name__ == '__main__':
     processes = []
     
     mp = mp.get_context("spawn")
-    valid_total_ep = mp.Value( ctypes.c_int32, 0 )
+    valid_total_ep_train = mp.Value( ctypes.c_int32, 0 )
+    valid_total_ep_valid_seen = mp.Value( ctypes.c_int32, 0 )
+    valid_total_ep_valid_unseen = mp.Value( ctypes.c_int32, 0 )
     lock = mp.Lock()
     # train(0,shared_model,optimizer, gpu_id=0)
-    for i in range(2):
+    # train(0, shared_model, optimizer, lock, valid_total_ep_train,  'train', 0 , summary_writer)
+    for i in range(3):
         p = mp.Process(
                 target=train,
                 args=(
                     i,
                     shared_model,
                     optimizer,
+                    lock,
+                    valid_total_ep_train,
                     'train',
-                    0
+                    0,
                 ),
             )
 
@@ -373,8 +390,11 @@ if __name__ == '__main__':
                 i,
                 shared_model,
                 optimizer,
+                lock,
+                valid_total_ep_valid_seen,
                 'valid_seen',
-                0
+                0,
+               
             ),
         )
 
@@ -389,12 +409,16 @@ if __name__ == '__main__':
             i,
             shared_model,
             optimizer,
+            lock,
+            valid_total_ep_valid_unseen,
             'valid_unseen',
-            0
+            0,
+            
         ),
     )
 
     p.start()
     processes.append(p)
     time.sleep(0.2)
-
+    for process in processes:
+        process.join()
