@@ -28,6 +28,7 @@ class Module(Base):
 
         # frame mask decoder
         decoder = vnn.ConvFrameMaskDecoderProgressMonitor if self.subgoal_monitoring else vnn.ConvFrameMaskDecoder
+        print(args.dframe)
         self.dec = decoder(self.emb_action_low, args.dframe, 2*args.dhid,
                            pframe=args.pframe,
                            attn_dropout=args.attn_dropout,

@@ -24,6 +24,8 @@ from transformers import RobertaTokenizer
 import pickle
 import copy
 from typing import Dict, List, Union, Optional, Any, TypeVar, Generic
+import models.nn.vnn as vnn
+from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_sequence
 
 ROBERTA_DIM = 1024
 class DotAttn(nn.Module):
@@ -829,6 +831,183 @@ class LookAheadPolicy(nn.Module):
         x = nn.functional.relu(self.fc2(x))
         x = nn.functional.relu(self.fc3(x))
         return x
+
+class A3CLSTMNSingleAgent(nn.Module):
+    def __init__(
+        self,
+        num_inputs_per_agent: int,
+        num_outputs:int,
+        state_repr_length: int,
+        vocab,
+        final_cnn_channels: int = 128,
+        
+    ):
+        super(A3CLSTMNSingleAgent, self).__init__()
+        
+        self.num_outputs = num_outputs
+        self.enc = nn.LSTM(512, 512, bidirectional=True, batch_first=True)
+        self.enc_att = vnn.SelfAttn(512 * 2)
+     
+        self.num_inputs_per_agent = num_inputs_per_agent
+        self.num_agents = 1
+        self.emb_word = nn.Embedding(len(vocab['word']), 512)
+        
+        # decoder = vnn.ConvFrameMaskDecoderProgressMonitor
+        # self.dec = decoder(self.emb_action_low, args.dframe, 2*state_repr_length,
+        #                    pframe=300,
+        #                    attn_dropout=0,
+        #                    hstate_dropout=0,
+        #                    actor_dropout=0,
+        #                    input_dropout=0,
+        #                    teacher_forcing=args.dec_teacher_forcing)
+        # input to conv is (num_agents, self.num_inputs_per_agent, 84, 84)
+        
+        self.cnn = nn.Sequential(
+            OrderedDict(
+                [
+                    (
+                        "conv1",
+                        nn.Conv2d(
+                            self.num_inputs_per_agent, 16, 5, stride=1, padding=2
+                        ),
+                    ),
+                    ("maxpool1", nn.MaxPool2d(2, 2)),
+                    ("relu1", nn.ReLU(inplace=True)),
+                    # shape =
+                    ("conv2", nn.Conv2d(16, 16, 5, stride=1, padding=1)),
+                    ("maxpool2", nn.MaxPool2d(2, 2)),
+                    ("relu2", nn.ReLU(inplace=True)),
+                    # shape =
+                    ("conv3", nn.Conv2d(16, 32, 4, stride=1, padding=1)),
+                    ("maxpool3", nn.MaxPool2d(3, 3)),
+                    ("relu3", nn.ReLU(inplace=True)),
+                    # shape =
+                    ("conv4", nn.Conv2d(32, 64, 3, stride=1, padding=1)),
+                    ("maxpool4", nn.MaxPool2d(3, 3)),
+                    ("relu4", nn.ReLU(inplace=True)),
+                    # shape = (4, 4)
+                    (
+                        "conv5",
+                        nn.Conv2d(64, final_cnn_channels, 3, stride=1, padding=1),
+                    ),
+                    ("maxpool5", nn.MaxPool2d(3, 3)),
+                    ("relu5", nn.ReLU(inplace=True)),
+                    # shape = (2, 2)
+                ]
+            )
+        )
+
+        # LSTM
+        self.lstm = nn.LSTM(
+            final_cnn_channels * 4 + 1024,
+            state_repr_length,
+            batch_first=True,
+        )
+
+        # Linear actor
+            
+        self.actor_linear = nn.Linear(state_repr_length, self.num_outputs)
+            
+
+        if self.actor_linear is not None:
+            self.actor_linear.weight.data = norm_col_init(
+                self.actor_linear.weight.data, 0.01
+            )
+            self.actor_linear.bias.data.fill_(0)
+        else:
+            for al in self.actor_linear_list:
+                al.weight.data = norm_col_init(al.weight.data, 0.01)
+                al.bias.data.fill_(0)
+
+        # Linear critic
+       
+        self.critic_linear = nn.Linear(state_repr_length, 1)
+
+        # Setting initial weights
+        self.apply(weights_init)
+        relu_gain = nn.init.calculate_gain("relu")
+        self.cnn._modules["conv1"].weight.data.mul_(relu_gain)
+        self.cnn._modules["conv2"].weight.data.mul_(relu_gain)
+        self.cnn._modules["conv3"].weight.data.mul_(relu_gain)
+        self.cnn._modules["conv4"].weight.data.mul_(relu_gain)
+        self.cnn._modules["conv5"].weight.data.mul_(relu_gain)
+
+        
+        self.train()
+
+    def forward(
+        self,
+        inputs: torch.FloatTensor,
+        hidden: Optional[torch.FloatTensor],
+        language_instr,
+        agent_rotations: Sequence[int],
+    ):
+        
+        if inputs.shape != (self.num_agents, self.num_inputs_per_agent, 300, 300):
+            raise Exception("input to model is not as expected, check!")
+        
+        
+       
+        
+        # pad_seq = pad_sequence([language_instr], batch_first=True, padding_value=0)
+        # seq_lengths = np.array(list(map(len, [language_instr])))
+        if next(self.parameters()).is_cuda:
+            language_instr = torch.LongTensor(language_instr).cuda()
+        else:
+            language_instr = torch.LongTensor(language_instr)
+        embed_seq = self.emb_word(language_instr)
+        # packed_input = pack_padded_sequence(embed_seq, seq_lengths, batch_first=True, enforce_sorted=False)
+        
+        # self.lang_dropout(emb_lang_goal_instr.data)
+        enc_lang_goal_instr, _ = self.enc(embed_seq.unsqueeze(0))
+        # enc_lang_goal_instr, _ = pad_packed_sequence(enc_lang_goal_instr, batch_first=True)
+        # self.lang_dropout(enc_lang_goal_instr)
+        cont_lang_goal_instr = self.enc_att(enc_lang_goal_instr)
+        
+        x = self.cnn(inputs)
+        # x.shape == (2, 128, 2, 2)
+        
+        #x = x.view(x.size(0), -1)
+        x = torch.reshape(x, (x.size(0), -1))
+        # x.shape = [num_agents, 512]
+        
+        
+        x = torch.cat((x, cont_lang_goal_instr), dim=1)
+        # x.shape = [num_agents, 512 + agent_num_embed_length]
+        
+        # print(x.unsqueeze(1).shape)
+        x, hidden = self.lstm(x.unsqueeze(1), hidden)
+        # x.shape = [num_agents, 1, state_repr_length]
+        # hidden[0].shape == [1, num_agents, state_repr_length]
+        # hidden[1].shape == [1, num_agents, state_repr_length]
+
+        x = x.squeeze(1)
+        # x.shape = [num_agents, state_repr_length]
+
+      
+       
+        value_all = self.critic_linear(x)
+
+        to_return = {
+            "critic": value_all,
+            "hidden": hidden,
+          
+        }
+  
+     
+        logits = self.actor_linear(x)
+           
+            # logits = self.actor_linear(
+            #     state_talk_reply_repr
+            # ) + self.marginal_linear_actor(state_talk_reply_repr).unsqueeze(1).repeat(
+            #     1, self.coordinate_actions_dim, 1
+            # ).view(
+            #     self.num_agents, self.num_outputs ** 2
+            # )
+        to_return["actor"] = logits
+    
+        
+        return to_return
     
     
 class ModelFreePolicy(nn.Module):
