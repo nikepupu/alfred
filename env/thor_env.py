@@ -40,7 +40,7 @@ class ThorEnv(Controller):
         self.cooled_objects = set()
         self.heated_objects = set()
 
-        print("ThorEnv started.")
+        # print("ThorEnv started.")
 
     def reset(self, scene_name_or_num,
               grid_size=constants.AGENT_STEP_SIZE / constants.RECORD_SMOOTHING_FACTOR,
@@ -53,7 +53,7 @@ class ThorEnv(Controller):
         '''
         reset scene and task states
         '''
-        print("Resetting ThorEnv")
+        # print("Resetting ThorEnv")
 
         if type(scene_name_or_num) == str:
             scene_name = scene_name_or_num

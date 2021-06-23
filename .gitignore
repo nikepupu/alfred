@@ -6,3 +6,4 @@
 *.pyo
 *.zip
 /model_pth
+*.o

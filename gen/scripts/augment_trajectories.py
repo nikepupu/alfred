@@ -1,5 +1,7 @@
 import os
 import sys
+
+from ai2thor.controller import RECEPTACLE_OBJECTS
 sys.path.append(os.path.join(os.environ['ALFRED_ROOT']))
 sys.path.append(os.path.join(os.environ['ALFRED_ROOT'], 'gen'))
 
@@ -18,8 +20,11 @@ import random
 from utils.video_util import VideoSaver
 from utils.py_util import walklevel
 from env.thor_env import ThorEnv
-
-
+from multiprocessing import shared_memory
+import multiprocessing
+import threading
+from multiprocessing import pool
+from itertools import product
 TRAJ_DATA_JSON_FILENAME = "traj_data.json"
 AUGMENTED_TRAJ_DATA_JSON_FILENAME = "augmented_traj_data.json"
 
@@ -27,9 +32,14 @@ ORIGINAL_IMAGES_FORLDER = "raw_images"
 HIGH_RES_IMAGES_FOLDER = "high_res_images"
 DEPTH_IMAGES_FOLDER = "depth_images"
 INSTANCE_MASKS_FOLDER = "instance_masks"
+OPENABLE_MASKS_FOLDER = "openable_masks"
+PICKUPABLE_MASKS_FOLDER = "pickupable_masks"
+SLICEABLE_MASKS_FOLDER = "sliceable_masks"
+TOGGLEABLE_MASKS_FOLDER = "toggleable_masks"
+RECEPTABLE_MASKS_FOLDER = "receptable_masks"
 
-IMAGE_WIDTH = 600
-IMAGE_HEIGHT = 600
+IMAGE_WIDTH = 300
+IMAGE_HEIGHT = 300
 
 render_settings = dict()
 render_settings['renderImage'] = True
@@ -43,6 +53,62 @@ video_saver = VideoSaver()
 def get_image_index(save_path):
     return len(glob.glob(save_path + '/*.png'))
 
+# def fill_in_masks(index):
+#         openable_shm = shared_memory.SharedMemory(name=name_openable)
+#         openable = np.ndarray((300,300), dtype=np.uint8, buffer=openable_shm.buf)
+        
+#         pickupable_shm = shared_memory.SharedMemory(name=name_pickupable)
+#         pickupable = np.ndarray((300,300), dtype=np.uint8, buffer=pickupable_shm.buf)
+        
+#         sliceable_shm = shared_memory.SharedMemory(name=name_sliceable)
+#         sliceable = np.ndarray((300,300), dtype=np.uint8, buffer=sliceable_shm.buf)
+        
+#         toggleable_shm = shared_memory.SharedMemory(name=name_toggleable)
+#         toggleable = np.ndarray((300,300), dtype=np.uint8, buffer=toggleable_shm.buf)
+        
+#         receptable_shm = shared_memory.SharedMemory(name=name_receptable)
+#         receptable = np.ndarray((300,300), dtype=np.uint8, buffer=receptable_shm.buf)
+        
+        
+#         # for index in range(start, end):
+#         i = index // 300
+#         j = index % 300
+#         color = (mask_image[i,j,0],  mask_image[i,j,1], mask_image[i,j,2])
+#         obj = event.color_to_object_id[color]
+#         for item  in event.metadata["objects"]:
+#             if item['objectId'] == obj:
+#                 if item['openable']:
+#                     openable[i][j] = 255
+#                 if item['pickupable']:
+#                     pickupable[i][j] = 255
+#                 if item['sliceable']:
+#                     sliceable[i][j] = 255
+#                 if item['toggleable']:
+#                     toggleable[i][j] = 255
+#                 if item['receptacle']:
+#                     receptable[i][j] = 255
+#                 break
+
+def fill_in_masks(index, mask_image, event, openable, pickupable, sliceable, toggleable, receptable):   
+    # for index in range(start, end):
+    i = index // 300
+    j = index % 300
+    color = (mask_image[i,j,0],  mask_image[i,j,1], mask_image[i,j,2])
+    obj = event.color_to_object_id[color]
+    for item  in event.metadata["objects"]:
+        if item['objectId'] == obj:
+            if item['openable']:
+                openable[i][j] = 255
+            if item['pickupable']:
+                pickupable[i][j] = 255
+            if item['sliceable']:
+                sliceable[i][j] = 255
+            if item['toggleable']:
+                toggleable[i][j] = 255
+            if item['receptacle']:
+                receptable[i][j] = 255
+            break
+    return openable, pickupable, sliceable, toggleable, receptable
 
 def save_image_with_delays(env, action,
                            save_path, direction=constants.BEFORE):
@@ -68,13 +134,170 @@ def save_image(event, save_path):
     # masks
     mask_save_path = os.path.join(save_path, INSTANCE_MASKS_FOLDER)
     mask_image = event.instance_segmentation_frame
+    # print(mask_image.shape)
+    # print(event.color_to_object_id)
+    
+    openable = np.zeros((300,300), dtype=np.uint8)
+    # sh_openable = shared_memory.SharedMemory(create=True, size=openable .nbytes)
+    # name_openable = sh_openable.name
+    
+    pickupable = np.zeros((300,300), dtype=np.uint8)
+    # sh_pickupable = shared_memory.SharedMemory(create=True, size=pickupable .nbytes)
+    # name_pickupable = sh_pickupable.name
+    
+    sliceable = np.zeros((300,300), dtype=np.uint8)
+    # sh_sliceable = shared_memory.SharedMemory(create=True, size=sliceable .nbytes)
+    # name_sliceable = sh_sliceable.name
+    
+    toggleable = np.zeros((300,300), dtype=np.uint8)
+    # sh_toggleable= shared_memory.SharedMemory(create=True, size=toggleable .nbytes)
+    # name_toggleable = sh_toggleable.name
+    
+    receptable = np.zeros((300,300), dtype=np.uint8)
+    # sh_receptable = shared_memory.SharedMemory(create=True, size=receptable.nbytes)
+    # name_receptable = sh_receptable.name
+    
+
+    
+                    
+    # start = time.time()
+    # threads = 6
+    # size = int(300*300/threads)
+    # thread_container = []
+    # for i in range(threads):
+    #     start = int(i * size)
+    #     end = int((i+1) * size)
+    #     t = threading.Thread(target=fill_in_masks, args=(start,end,))
+        
+    #     t.start()
+    #     thread_container.append(t)
+        
+    
+    # for i in range(len(thread_container)):
+    #     thread_container[i].join()
+    # end = time.time()
+    # print((end-start)/1000000)
+    
+  
+    # inputs = [(index, mask_image, event, openable, pickupable, sliceable, toggleable, receptable) for index in range(300) ]
+    
+    # result = multiprocessing.Pool(6).starmap(fill_in_masks, inputs)
+    # openables = np.array([item[0] for item in result])
+    # openable = np.add.reduce(openables)
+    
+    # pickupables = np.array([item[1] for item in result])
+    # pickupable = np.add.reduce(pickupables)
+    
+    # sliceables = np.array([item[2] for item in result])
+    # sliceable = np.add.reduce(sliceables)
+    
+    # toggleables = np.array([item[3] for item in result])
+    # toggleable = np.add.reduce(toggleables)
+    
+    # receptables = np.array([item[4] for item in result])
+    # receptable = np.add.reduce(receptables)
+   
+   
+    for i in range(300):
+        for j in range(300):
+            color = (mask_image[i,j,0],  mask_image[i,j,1], mask_image[i,j,2])
+            obj = event.color_to_object_id[color]
+            for item  in event.metadata["objects"]:
+                if item['objectId'] == obj:
+                    if item['openable']:
+                        openable[i][j] = 255
+                    if item['pickupable']:
+                        pickupable[i][j] = 255
+                    if item['sliceable']:
+                        sliceable[i][j] = 255
+                    if item['toggleable']:
+                        toggleable[i][j] = 255
+                    if item['receptacle']:
+                        receptable[i][j] = 255
+                    break
+    
+    
+    # def f1(obj):
+    #     for item  in event.metadata["objects"]:
+    #         if item['objectId'] == obj:
+    #             if item['openable']:
+    #                 return True
+    #             break
+    #     return False
+    
+    # def f2(obj):
+    #     for item  in event.metadata["objects"]:
+    #         if item['objectId'] == obj:
+    #             if item['pickupable']:
+    #                 return True
+    #             break
+    #     return False
+    
+    # def f3(obj):
+    #     for item  in event.metadata["objects"]:
+    #         if item['objectId'] == obj:
+    #             if item['sliceable']:
+    #                 return True
+    #             break
+    #     return False
+    
+    # def f4(obj):
+    #     for item  in event.metadata["objects"]:
+    #         if item['objectId'] == obj:
+    #             if item['toggleable']:
+    #                 return True
+    #             break
+    #     return False
+    
+    # def f5(obj):
+    #     for item  in event.metadata["objects"]:
+    #         if item['objectId'] == obj:
+    #             if item['receptacle']:
+    #                 return True
+    #             break
+    #     return False
+    
+    # objs = list(map(lambda ij : event.color_to_object_id[(mask_image[ij[0],ij[1],0], mask_image[ij[0],ij[1],1], mask_image[ij[0],ij[1],2] )],  
+    #                     product(range(300), range(300))))
+    
+    # openable = np.fromiter(map( f1, objs ), dtype=np.uint8)*255
+    # openable = openable.reshape((300,300))
+    
+    # pickupable = np.fromiter(map( f2, objs ), dtype=np.uint8)*255
+    # pickupable = pickupable.reshape((300,300))
+    
+    
+    # sliceable = np.fromiter(map( f3, objs ), dtype=np.uint8)*255
+    # sliceable = sliceable.reshape((300,300))
+    
+    # toggleable= np.fromiter(map( f4, objs ), dtype=np.uint8)*255
+    # toggleable = toggleable.reshape((300,300))
+    
+    # receptacle = np.fromiter(map( f5, objs ), dtype=np.uint8)*255
+    # receptacle = receptacle.reshape((300,300))
+    
+    
+    # print(pickupable.shape)
+  
+    openable_save_path = os.path.join(save_path, OPENABLE_MASKS_FOLDER)
+    pickupable_save_path = os.path.join(save_path, PICKUPABLE_MASKS_FOLDER)
+    sliceable_save_path = os.path.join(save_path, SLICEABLE_MASKS_FOLDER)             
+    toggleable_save_path = os.path.join(save_path, TOGGLEABLE_MASKS_FOLDER)
+    receptable_save_path = os.path.join(save_path, RECEPTABLE_MASKS_FOLDER) 
 
     # dump images
     im_ind = get_image_index(rgb_save_path)
     cv2.imwrite(rgb_save_path + '/%09d.png' % im_ind, rgb_image)
     cv2.imwrite(depth_save_path + '/%09d.png' % im_ind, depth_image)
     cv2.imwrite(mask_save_path + '/%09d.png' % im_ind, mask_image)
-
+    cv2.imwrite(openable_save_path + '/%09d.png' % im_ind, openable)
+    cv2.imwrite(pickupable_save_path + '/%09d.png' % im_ind, pickupable)
+    cv2.imwrite(sliceable_save_path + '/%09d.png' % im_ind, sliceable)
+    cv2.imwrite(toggleable_save_path + '/%09d.png' % im_ind, toggleable)
+    cv2.imwrite(receptable_save_path + '/%09d.png' % im_ind, receptable)
+  
+    # print()
+    
     return im_ind
 
 
@@ -101,7 +324,14 @@ def augment_traj(env, json_file):
     high_res_images_dir = os.path.join(root_dir, HIGH_RES_IMAGES_FOLDER)
     depth_images_dir = os.path.join(root_dir, DEPTH_IMAGES_FOLDER)
     instance_masks_dir = os.path.join(root_dir, INSTANCE_MASKS_FOLDER)
+    openable_mask_dir = os.path.join(root_dir, OPENABLE_MASKS_FOLDER)
+    pickable_mask_dir = os.path.join(root_dir, PICKUPABLE_MASKS_FOLDER)
+    sliceable_mask_dir = os.path.join(root_dir, SLICEABLE_MASKS_FOLDER)
+    toggleable_mask_dir = os.path.join(root_dir, TOGGLEABLE_MASKS_FOLDER)
+    receptable_mask_dir = os.path.join(root_dir, RECEPTABLE_MASKS_FOLDER)
+    
     augmented_json_file = os.path.join(root_dir, AUGMENTED_TRAJ_DATA_JSON_FILENAME)
+    
 
     # fresh images list
     traj_data['images'] = list()
@@ -109,6 +339,11 @@ def augment_traj(env, json_file):
     clear_and_create_dir(high_res_images_dir)
     clear_and_create_dir(depth_images_dir)
     clear_and_create_dir(instance_masks_dir)
+    clear_and_create_dir(openable_mask_dir)
+    clear_and_create_dir(pickable_mask_dir)
+    clear_and_create_dir(sliceable_mask_dir)
+    clear_and_create_dir(toggleable_mask_dir)
+    clear_and_create_dir(receptable_mask_dir)
 
     # scene setup
     scene_num = traj_data['scene']['scene_num']
@@ -122,7 +357,8 @@ def augment_traj(env, json_file):
     env.restore_scene(object_poses, object_toggles, dirty_and_empty)
 
     env.step(dict(traj_data['scene']['init_action']))
-    print("Task: %s" % (traj_data['template']['task_desc']))
+    # print(traj_data.keys())
+    # print("Task: %s" % (traj_data['template']['task_desc']))
 
     # setup task
     env.set_task(traj_data, args, reward_type='dense')
@@ -310,3 +546,6 @@ for n in range(args.num_threads):
     threads.append(thread)
     thread.start()
     time.sleep(1)
+# import cProfile
+# run()
+# cProfile.run('run()')
