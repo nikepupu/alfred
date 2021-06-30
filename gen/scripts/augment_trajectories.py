@@ -157,127 +157,44 @@ def save_image(event, save_path):
     # sh_receptable = shared_memory.SharedMemory(create=True, size=receptable.nbytes)
     # name_receptable = sh_receptable.name
     
-
-    
-                    
-    # start = time.time()
-    # threads = 6
-    # size = int(300*300/threads)
-    # thread_container = []
-    # for i in range(threads):
-    #     start = int(i * size)
-    #     end = int((i+1) * size)
-    #     t = threading.Thread(target=fill_in_masks, args=(start,end,))
-        
-    #     t.start()
-    #     thread_container.append(t)
-        
-    
-    # for i in range(len(thread_container)):
-    #     thread_container[i].join()
-    # end = time.time()
-    # print((end-start)/1000000)
-    
-  
-    # inputs = [(index, mask_image, event, openable, pickupable, sliceable, toggleable, receptable) for index in range(300) ]
-    
-    # result = multiprocessing.Pool(6).starmap(fill_in_masks, inputs)
-    # openables = np.array([item[0] for item in result])
-    # openable = np.add.reduce(openables)
-    
-    # pickupables = np.array([item[1] for item in result])
-    # pickupable = np.add.reduce(pickupables)
-    
-    # sliceables = np.array([item[2] for item in result])
-    # sliceable = np.add.reduce(sliceables)
-    
-    # toggleables = np.array([item[3] for item in result])
-    # toggleable = np.add.reduce(toggleables)
-    
-    # receptables = np.array([item[4] for item in result])
-    # receptable = np.add.reduce(receptables)
-   
-   
-    for i in range(300):
-        for j in range(300):
-            color = (mask_image[i,j,0],  mask_image[i,j,1], mask_image[i,j,2])
-            obj = event.color_to_object_id[color]
-            for item  in event.metadata["objects"]:
-                if item['objectId'] == obj:
-                    if item['openable']:
-                        openable[i][j] = 255
-                    if item['pickupable']:
-                        pickupable[i][j] = 255
-                    if item['sliceable']:
-                        sliceable[i][j] = 255
-                    if item['toggleable']:
-                        toggleable[i][j] = 255
-                    if item['receptacle']:
-                        receptable[i][j] = 255
-                    break
+                
+    for obj in event.metadata["objects"]:
+       o_id = obj['objectId']
+       
+       if obj['visible'] and o_id in event.instance_masks:
+            if obj['openable']:
+                openable[np.nonzero(event.instance_masks[o_id])] = 255
+            if obj['pickupable']:
+                pickupable[np.nonzero(event.instance_masks[o_id])] = 255
+            if obj['sliceable']:
+                sliceable[np.nonzero(event.instance_masks[o_id])] = 255
+            if obj['toggleable']:
+                toggleable[np.nonzero(event.instance_masks[o_id])] = 255
+            if obj['receptacle']:
+                receptable[np.nonzero(event.instance_masks[o_id])] = 255
+               
+    openable[openable > 255] = 255
+    openable[openable < 0] = 0
+           
+    # for i in range(300):
+    #     for j in range(300):
+    #         color = (mask_image[i,j,0],  mask_image[i,j,1], mask_image[i,j,2])
+    #         obj = event.color_to_object_id[color]
+    #         for item  in event.metadata["objects"]:
+    #             if item['objectId'] == obj:
+    #                 if item['openable']:
+    #                     openable[i][j] = 255
+    #                 if item['pickupable']:
+    #                     pickupable[i][j] = 255
+    #                 if item['sliceable']:
+    #                     sliceable[i][j] = 255
+    #                 if item['toggleable']:
+    #                     toggleable[i][j] = 255
+    #                 if item['receptacle']:
+    #                     receptable[i][j] = 255
+    #                 break
     
     
-    # def f1(obj):
-    #     for item  in event.metadata["objects"]:
-    #         if item['objectId'] == obj:
-    #             if item['openable']:
-    #                 return True
-    #             break
-    #     return False
-    
-    # def f2(obj):
-    #     for item  in event.metadata["objects"]:
-    #         if item['objectId'] == obj:
-    #             if item['pickupable']:
-    #                 return True
-    #             break
-    #     return False
-    
-    # def f3(obj):
-    #     for item  in event.metadata["objects"]:
-    #         if item['objectId'] == obj:
-    #             if item['sliceable']:
-    #                 return True
-    #             break
-    #     return False
-    
-    # def f4(obj):
-    #     for item  in event.metadata["objects"]:
-    #         if item['objectId'] == obj:
-    #             if item['toggleable']:
-    #                 return True
-    #             break
-    #     return False
-    
-    # def f5(obj):
-    #     for item  in event.metadata["objects"]:
-    #         if item['objectId'] == obj:
-    #             if item['receptacle']:
-    #                 return True
-    #             break
-    #     return False
-    
-    # objs = list(map(lambda ij : event.color_to_object_id[(mask_image[ij[0],ij[1],0], mask_image[ij[0],ij[1],1], mask_image[ij[0],ij[1],2] )],  
-    #                     product(range(300), range(300))))
-    
-    # openable = np.fromiter(map( f1, objs ), dtype=np.uint8)*255
-    # openable = openable.reshape((300,300))
-    
-    # pickupable = np.fromiter(map( f2, objs ), dtype=np.uint8)*255
-    # pickupable = pickupable.reshape((300,300))
-    
-    
-    # sliceable = np.fromiter(map( f3, objs ), dtype=np.uint8)*255
-    # sliceable = sliceable.reshape((300,300))
-    
-    # toggleable= np.fromiter(map( f4, objs ), dtype=np.uint8)*255
-    # toggleable = toggleable.reshape((300,300))
-    
-    # receptacle = np.fromiter(map( f5, objs ), dtype=np.uint8)*255
-    # receptacle = receptacle.reshape((300,300))
-    
-    
-    # print(pickupable.shape)
   
     openable_save_path = os.path.join(save_path, OPENABLE_MASKS_FOLDER)
     pickupable_save_path = os.path.join(save_path, PICKUPABLE_MASKS_FOLDER)
