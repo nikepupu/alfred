@@ -162,20 +162,29 @@ def save_image(event, save_path):
        o_id = obj['objectId']
        
        if obj['visible'] and o_id in event.instance_masks:
+            
             if obj['openable']:
-                openable[np.nonzero(event.instance_masks[o_id])] = 255
+                # print(event.instance_masks[o_id])
+                openable[event.instance_masks[o_id]] = 255
             if obj['pickupable']:
-                pickupable[np.nonzero(event.instance_masks[o_id])] = 255
-            if obj['sliceable']:
-                sliceable[np.nonzero(event.instance_masks[o_id])] = 255
-            if obj['toggleable']:
-                toggleable[np.nonzero(event.instance_masks[o_id])] = 255
-            if obj['receptacle']:
-                receptable[np.nonzero(event.instance_masks[o_id])] = 255
+                # print(np.nonzero(event.instance_masks[o_id]))
+                # print(event.instance_masks[o_id].shape)
+                # exit()
+                pickupable[event.instance_masks[o_id]] = 255
                
-    openable[openable > 255] = 255
-    openable[openable < 0] = 0
-           
+            if obj['sliceable']:
+                sliceable[event.instance_masks[o_id]] = 255
+            if obj['toggleable']:
+                toggleable[event.instance_masks[o_id]] = 255
+            if obj['receptacle']:
+                receptable[event.instance_masks[o_id]] = 255
+               
+    # openable[openable > 255] = 255
+    # openable[openable < 0] = 0
+    # print(openable)
+    
+    # print(np.max(pickupable) )
+    # exit()
     # for i in range(300):
     #     for j in range(300):
     #         color = (mask_image[i,j,0],  mask_image[i,j,1], mask_image[i,j,2])
